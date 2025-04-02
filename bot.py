@@ -14,9 +14,16 @@ if not web3.is_connected():
 # Constants
 CHAIN_ID = 10143  # Monad Chain ID
 MAX_RETRIES = 3  # Maximum retries per transaction
-PRIVATE_KEY = ""  # Hardcoded private key (replace with caution)
+RETRY_DELAY = 10  # Seconds between retries
+PRIVATE_KEY = ""  # Hardcoded private key (use with caution)
+MAX_BALANCE_THRESHOLD = 0.1  # Skip wallets with balance greater than this
 
-# Function to send ETH transaction to a single wallet
+# Function to check the balance of a wallet
+def check_balance(wallet_address):
+    balance = web3.eth.get_balance(wallet_address)
+    return web3.from_wei(balance, 'ether')
+
+# Function to send ETH transaction to a wallet
 def send_eth_transaction_to_wallet(private_key, amount, to_address):
     sender_address = web3.eth.account.from_key(private_key).address
     value_to_send = web3.to_wei(amount, 'ether')
@@ -42,7 +49,7 @@ def send_eth_transaction_to_wallet(private_key, amount, to_address):
             }
 
             signed_tx = web3.eth.account.sign_transaction(tx, private_key)
-            tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)  # Fixed rawTransaction attribute
+            tx_hash = web3.eth.send_raw_transaction(signed_tx.rawTransaction)
             print(f"Sent {amount} ETH to {to_address}. Tx Hash: {web3.to_hex(tx_hash)}")
             return True  # Successfully sent
         except requests.exceptions.HTTPError as e:
@@ -61,16 +68,44 @@ def load_wallet_addresses(filename="wallets.txt"):
         wallets = [line.strip() for line in file.readlines()]
     return wallets
 
+# Function to process wallets: check balance, send ETH if needed
+def process_wallets(amount):
+    wallets = load_wallet_addresses()
+    sender_address = web3.eth.account.from_key(PRIVATE_KEY).address
+
+    for wallet_number, to_address in enumerate(wallets, start=1):
+        balance = check_balance(to_address)
+        print(f"Wallet {wallet_number} ({to_address}) balance: {balance:.6f} ETH")
+
+        # Skip wallet if balance is greater than 0.1 ETH
+        if balance > MAX_BALANCE_THRESHOLD:
+            print(f"Skipping wallet {wallet_number} ({to_address}), balance above {MAX_BALANCE_THRESHOLD} ETH.\n")
+            continue
+
+        # Check if wallet has already received the required amount
+        if balance >= amount:
+            print(f"Wallet {wallet_number} ({to_address}) already has {amount} ETH. Skipping.\n")
+            continue
+
+        # Send ETH and verify it was received
+        if send_eth_transaction_to_wallet(PRIVATE_KEY, amount, to_address):
+            for retry in range(MAX_RETRIES):
+                time.sleep(RETRY_DELAY)  # Wait before checking balance again
+                new_balance = check_balance(to_address)
+
+                if new_balance >= amount:
+                    print(f"✅ Wallet {wallet_number} ({to_address}) successfully received {amount} ETH.\n")
+                    break
+                else:
+                    print(f"🔄 Checking again... Wallet {wallet_number} balance: {new_balance:.6f} ETH")
+            else:
+                print(f"⚠️ Wallet {wallet_number} ({to_address}) did not receive ETH after {MAX_RETRIES} checks.\n")
+
 # Get user input for the ETH amount
 def get_user_input():
-    amount = float(input("Enter the amount of ETH to send to each wallet: "))  # Prompt the user for ETH amount
+    amount = float(input("Enter the amount of ETH to send to each wallet: "))
     return amount
 
-# Load wallet addresses and send transactions
-wallets = load_wallet_addresses()  # Load the wallet addresses from wallets.txt
-amount = get_user_input()  # Get user input for amount
-
-# Send the specified amount of ETH to each wallet in the list
-for to_address in wallets:
-    send_eth_transaction_to_wallet(PRIVATE_KEY, amount, to_address)
-    time.sleep(5)  # Add a small delay between transactions
+# Main execution
+amount = get_user_input()
+process_wallets(amount)
